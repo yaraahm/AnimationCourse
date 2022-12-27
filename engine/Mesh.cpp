@@ -1,13 +1,76 @@
 #include "Mesh.h"
 #include <utility>
 #include "ObjLoader.h"
+#include "igl/edge_flaps.h"
+#include "igl/parallel_for.h"
+#include "igl/shortest_edge_and_midpoint.h"
+#include "igl/collapse_edge.h"
+#include "igl/per_vertex_normals.h"
 
 
 namespace cg3d
 {
 
-Mesh::Mesh(std::string name, Eigen::MatrixXd vertices, Eigen::MatrixXi faces, Eigen::MatrixXd vertexNormals, Eigen::MatrixXd textureCoords)
-        : name(std::move(name)), data{{vertices, faces, vertexNormals, textureCoords}} {}
+    Mesh::Mesh(std::string name, Eigen::MatrixXd vertices, Eigen::MatrixXi faces, Eigen::MatrixXd vertexNormals, Eigen::MatrixXd textureCoords)
+        : name(std::move(name)), data{ {vertices, faces, vertexNormals, textureCoords} } {
+
+        init_my_data();
+    }
+
+
+
+    void Mesh::init_my_data() {
+
+        F = Eigen::MatrixXi(data[0].faces);
+        V = Eigen::MatrixXd(data[0].vertices);
+
+        igl::edge_flaps(F, E, EMAP, EF, EI);
+        C.resize(E.rows(), V.cols());
+        Eigen::VectorXd costs(E.rows());
+        // https://stackoverflow.com/questions/2852140/priority-queue-clear-method
+        // Q.clear();
+        Q = {};
+        EQ = Eigen::VectorXi::Zero(E.rows());
+        {
+            Eigen::VectorXd costs(E.rows());
+            igl::parallel_for(E.rows(), [&](const int e)
+                {
+                    double cost = e;
+            Eigen::RowVectorXd p(1, 3);
+            igl::shortest_edge_and_midpoint(e, V, F, E, EMAP, EF, EI, cost, p);
+            C.row(e) = p;
+            costs(e) = cost;
+                }, 10000);
+            for (int e = 0;e < E.rows();e++)
+            {
+                Q.emplace(costs(e), e, 0);
+            }
+        }
+    }
+
+
+
+    int Mesh::simplify(int edges_to_collapse) {
+        if (!Q.empty())
+        {
+            bool something_collapsed = false;
+            for (int j = 0;j < edges_to_collapse;j++)
+            {
+                if (!igl::collapse_edge(igl::shortest_edge_and_midpoint, V, F, E, EMAP, EF, EI, Q, EQ, C))
+                    break;
+
+                something_collapsed = true;
+            }
+
+            if (something_collapsed)
+            {
+                Eigen::MatrixXd vertexNormals;
+                igl::per_vertex_normals(Eigen::MatrixXd(V), Eigen::MatrixXi(F), vertexNormals);
+                data.push_back({ Eigen::MatrixXd(V), Eigen::MatrixXi(F), vertexNormals, data[data.size() - 1].textureCoords });
+            }
+        }
+        return data.size() - 1;
+    }
 
 const std::shared_ptr<Mesh>& Mesh::Plane()
 {
